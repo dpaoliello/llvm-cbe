@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// What a phi gets set to `poison` we don't initialize the PHI_TEMPORARY variable
+// When a phi gets set to `poison` we don't initialize the PHI_TEMPORARY variable
 // so suppress "uninitialized local variable '...' used".
 // msvc_extra_args: /wd4700
 
