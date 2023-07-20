@@ -1176,8 +1176,8 @@ void CWriter::printConstant(Constant *CPV, enum OperandContext Context) {
 
     case Instruction::GetElementPtr:
       Out << "(";
-      printGEPExpression(CE->getOperand(0), CPV->getNumOperands(), gep_type_begin(CPV),
-                         gep_type_end(CPV));
+      printGEPExpression(CE->getOperand(0), CPV->getNumOperands(),
+                         gep_type_begin(CPV), gep_type_end(CPV));
       Out << ")";
       return;
     case Instruction::Select:
@@ -1878,7 +1878,8 @@ void CWriter::writeOperandWithCast(Value *Operand, unsigned Opcode) {
     writeOperand(Operand, ContextCasted);
 }
 
-void CWriter::writeVectorOperandWithCast(Value *Operand, unsigned Index, unsigned Opcode) {
+void CWriter::writeVectorOperandWithCast(Value *Operand, unsigned Index,
+                                         unsigned Opcode) {
   // Write out the casted operand if we should, otherwise just write the
   // operand.
 
@@ -1887,7 +1888,8 @@ void CWriter::writeVectorOperandWithCast(Value *Operand, unsigned Index, unsigne
   opcodeNeedsCast(Opcode, shouldCast, castIsSigned);
   if (shouldCast) {
     Out << "((";
-    printSimpleType(Out, cast<VectorType>(Operand->getType())->getElementType(), castIsSigned);
+    printSimpleType(Out, cast<VectorType>(Operand->getType())->getElementType(),
+                    castIsSigned);
     Out << ")";
     writeOperand(Operand, ContextCasted);
     Out << ".vector[" << Index << "])";
@@ -4643,16 +4645,18 @@ void CWriter::printIntrinsicDefinition(FunctionType *funT, unsigned Opcode,
       break;
 
     case Intrinsic::fshr: {
-        unsigned BW = elemIntT->getBitWidth();
-        Out << "  r = (a << (" << BW << " - (c % " << BW << "))) | (b >> (c % " << BW << "));\n";
-        break;
-      }
+      unsigned BW = elemIntT->getBitWidth();
+      Out << "  r = (a << (" << BW << " - (c % " << BW << "))) | (b >> (c % "
+          << BW << "));\n";
+      break;
+    }
 
     case Intrinsic::fshl: {
-        unsigned BW = elemIntT->getBitWidth();
-        Out << "  r = (a << (c % " << BW << ")) | (b >> (" << BW << " - (c % " << BW << ")));\n";
-        break;
-      }
+      unsigned BW = elemIntT->getBitWidth();
+      Out << "  r = (a << (c % " << BW << ")) | (b >> (" << BW << " - (c % "
+          << BW << ")));\n";
+      break;
+    }
 
     case Intrinsic::abs:
       Out << "  r = a < 0 ? -a : a;\n";
@@ -4666,7 +4670,8 @@ void CWriter::printIntrinsicDefinition(FunctionType *funT, unsigned Opcode,
   } else {
     // handle FP ops
     const char *suffix;
-    cwriter_assert(retT == elemT || Opcode == Intrinsic::fptosi_sat || Opcode == Intrinsic::fptoui_sat);
+    cwriter_assert(retT == elemT || Opcode == Intrinsic::fptosi_sat ||
+                   Opcode == Intrinsic::fptoui_sat);
     if (elemT->isFloatTy() || elemT->isHalfTy()) {
       suffix = "f";
     } else if (elemT->isDoubleTy()) {
@@ -5356,8 +5361,8 @@ void CWriter::visitAllocaInst(AllocaInst &I) {
   Out << "))";
 }
 
-void CWriter::printGEPExpression(Value *Ptr, unsigned NumOperators, gep_type_iterator I,
-                                 gep_type_iterator E) {
+void CWriter::printGEPExpression(Value *Ptr, unsigned NumOperators,
+                                 gep_type_iterator I, gep_type_iterator E) {
 
   // If there are no indices, just print out the pointer.
   if (I == E) {
@@ -5397,7 +5402,8 @@ void CWriter::printGEPExpression(Value *Ptr, unsigned NumOperators, gep_type_ite
       printTypeName(Out, I.getStructType());
       Out << "*)";
       writeOperand(Ptr);
-      Out << ")->field" << cast<ConstantInt>(I.getOperand())->getZExtValue() << ')';
+      Out << ")->field" << cast<ConstantInt>(I.getOperand())->getZExtValue()
+          << ')';
       // Eat the struct index
       ++I;
       Out << ')';
@@ -5547,12 +5553,14 @@ void CWriter::visitGetElementPtrInst(GetElementPtrInst &I) {
   CurInstr = &I;
 
   auto FirstOp = gep_type_begin(I);
-  if ((FirstOp != gep_type_end(I)) && isa<VectorType>(FirstOp.getOperand()->getType())) {
+  if ((FirstOp != gep_type_end(I)) &&
+      isa<VectorType>(FirstOp.getOperand()->getType())) {
     CtorDeclTypes.insert(I.getType());
     Out << "llvm_ctor_";
     printTypeString(Out, I.getType(), false);
     Out << "(";
-    for (unsigned Index = 0; Index < NumberOfElements(cast<VectorType>(I.getType())); ++Index) {
+    for (unsigned Index = 0;
+         Index < NumberOfElements(cast<VectorType>(I.getType())); ++Index) {
       if (Index > 0)
         Out << ", ";
       Out << "(&((";
@@ -5560,7 +5568,8 @@ void CWriter::visitGetElementPtrInst(GetElementPtrInst &I) {
       Out << "*)";
       writeOperand(I.getPointerOperand());
       Out << ")[";
-      writeVectorOperandWithCast(FirstOp.getOperand(), Index, Instruction::GetElementPtr);
+      writeVectorOperandWithCast(FirstOp.getOperand(), Index,
+                                 Instruction::GetElementPtr);
       Out << "])";
     }
     Out << ")";
@@ -5568,7 +5577,8 @@ void CWriter::visitGetElementPtrInst(GetElementPtrInst &I) {
     // If using a vector, then only one op is allowed.
     cwriter_assert(++FirstOp == gep_type_end(I));
   } else {
-    printGEPExpression(I.getPointerOperand(), I.getNumOperands(), gep_type_begin(I), gep_type_end(I));
+    printGEPExpression(I.getPointerOperand(), I.getNumOperands(),
+                       gep_type_begin(I), gep_type_end(I));
   }
 }
 
