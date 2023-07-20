@@ -1176,7 +1176,7 @@ void CWriter::printConstant(Constant *CPV, enum OperandContext Context) {
 
     case Instruction::GetElementPtr:
       Out << "(";
-      printGEPExpression(CE->getOperand(0), gep_type_begin(CPV),
+      printGEPExpression(CE->getOperand(0), CPV->getNumOperands(), gep_type_begin(CPV),
                          gep_type_end(CPV));
       Out << ")";
       return;
@@ -1865,20 +1865,37 @@ void CWriter::writeOperandWithCast(Value *Operand, unsigned Opcode) {
   // Write out the casted operand if we should, otherwise just write the
   // operand.
 
-  // Extract the operand's type, we'll need it.
   bool shouldCast;
   bool castIsSigned;
   opcodeNeedsCast(Opcode, shouldCast, castIsSigned);
-
-  Type *OpTy = Operand->getType();
   if (shouldCast) {
     Out << "((";
-    printSimpleType(Out, OpTy, castIsSigned);
+    printSimpleType(Out, Operand->getType(), castIsSigned);
     Out << ")";
     writeOperand(Operand, ContextCasted);
     Out << ")";
   } else
     writeOperand(Operand, ContextCasted);
+}
+
+void CWriter::writeVectorOperandWithCast(Value *Operand, unsigned Index, unsigned Opcode) {
+  // Write out the casted operand if we should, otherwise just write the
+  // operand.
+
+  bool shouldCast;
+  bool castIsSigned;
+  opcodeNeedsCast(Opcode, shouldCast, castIsSigned);
+  if (shouldCast) {
+    Out << "((";
+    printSimpleType(Out, cast<VectorType>(Operand->getType())->getElementType(), castIsSigned);
+    Out << ")";
+    writeOperand(Operand, ContextCasted);
+    Out << ".vector[" << Index << "])";
+  } else {
+    Out << "(";
+    writeOperand(Operand, ContextCasted);
+    Out << ".vector[" << Index << "])";
+  }
 }
 
 // Write the operand with a cast to another type based on the icmp predicate
@@ -2546,8 +2563,20 @@ void CWriter::generateHeader(Module &M) {
       case Intrinsic::trunc:
       case Intrinsic::umax:
       case Intrinsic::umin:
-      case Intrinsic::maximum:
-      case Intrinsic::minimum:
+      case Intrinsic::smax:
+      case Intrinsic::smin:
+      case Intrinsic::maxnum:
+      case Intrinsic::minnum:
+      case Intrinsic::sadd_sat:
+      case Intrinsic::uadd_sat:
+      case Intrinsic::ssub_sat:
+      case Intrinsic::usub_sat:
+      case Intrinsic::fshr:
+      case Intrinsic::fshl:
+      case Intrinsic::fptosi_sat:
+      case Intrinsic::fptoui_sat:
+      case Intrinsic::abs:
+      case Intrinsic::bitreverse:
         intrinsicsToDefine.push_back(&*I);
         continue;
       }
@@ -2643,9 +2672,14 @@ void CWriter::generateHeader(Module &M) {
         headerUseAligns();
         Out << "__PREFIXALIGN__(" << Alignment << ") ";
       }
+      if (ElTy->isFunctionTy()) {
+        getFunctionName(cast<Function>(I->getAliaseeObject()));
+      } else {
+        printTypeName(Out, ElTy, false);
+      }
       // GetValueName would resolve the alias, which is not what we want,
       // so use getName directly instead (assuming that the Alias has a name...)
-      printTypeName(Out, ElTy, false) << " *" << I->getName();
+      Out << " *" << I->getName();
       if (IsOveraligned) {
         headerUseAligns();
         Out << " __POSTFIXALIGN__(" << Alignment << ")";
@@ -4471,17 +4505,6 @@ void CWriter::printIntrinsicDefinition(FunctionType *funT, unsigned Opcode,
   Out << OpName;
   Out << "(";
   for (i = 0; i < numParams; i++) {
-    switch (Opcode) {
-    // optional intrinsic validity cwriter_assertion checks
-    default:
-      // default case: assume all parameters must have the same type
-      cwriter_assert(elemT == funT->getParamType(i));
-      break;
-    case Intrinsic::ctlz:
-    case Intrinsic::cttz:
-    case Intrinsic::powi:
-      break;
-    }
     printTypeName(Out, funT->getParamType(i), isSigned);
     Out << " " << (char)('a' + i);
     if (i != numParams - 1)
@@ -4600,20 +4623,50 @@ void CWriter::printIntrinsicDefinition(FunctionType *funT, unsigned Opcode,
       break;
 
     case Intrinsic::umax:
-    case Intrinsic::maximum:
+    case Intrinsic::smax:
       Out << "  r = a > b ? a : b;\n";
       break;
 
     case Intrinsic::umin:
-    case Intrinsic::minimum:
+    case Intrinsic::smin:
       Out << "  r = a < b ? a : b;\n";
+      break;
+
+    case Intrinsic::sadd_sat:
+    case Intrinsic::uadd_sat:
+      Out << " ;// TODO\n";
+      break;
+
+    case Intrinsic::ssub_sat:
+    case Intrinsic::usub_sat:
+      Out << "  r = a > b ? a - b : 0;\n";
+      break;
+
+    case Intrinsic::fshr: {
+        unsigned BW = elemIntT->getBitWidth();
+        Out << "  r = (a << (" << BW << " - (c % " << BW << "))) | (b >> (c % " << BW << "));\n";
+        break;
+      }
+
+    case Intrinsic::fshl: {
+        unsigned BW = elemIntT->getBitWidth();
+        Out << "  r = (a << (c % " << BW << ")) | (b >> (" << BW << " - (c % " << BW << ")));\n";
+        break;
+      }
+
+    case Intrinsic::abs:
+      Out << "  r = a < 0 ? -a : a;\n";
+      break;
+
+    case Intrinsic::bitreverse:
+      Out << " ;// TODO\n";
       break;
     }
 
   } else {
     // handle FP ops
     const char *suffix;
-    cwriter_assert(retT == elemT);
+    cwriter_assert(retT == elemT || Opcode == Intrinsic::fptosi_sat || Opcode == Intrinsic::fptoui_sat);
     if (elemT->isFloatTy() || elemT->isHalfTy()) {
       suffix = "f";
     } else if (elemT->isDoubleTy()) {
@@ -4676,6 +4729,24 @@ void CWriter::printIntrinsicDefinition(FunctionType *funT, unsigned Opcode,
       headerUseMath();
       Out << "  r = trunc" << suffix << "(a);\n";
       break;
+
+    case Intrinsic::fptosi_sat:
+      Out << " ;// TODO\n";
+      break;
+
+    case Intrinsic::fptoui_sat:
+      Out << " ;// TODO\n";
+      break;
+
+    case Intrinsic::maxnum:
+      headerUseMath();
+      Out << "  r = fmax" << suffix << "(a, b);\n";
+      break;
+
+    case Intrinsic::minnum:
+      headerUseMath();
+      Out << "  r = fmin" << suffix << "(a, b);\n";
+      break;
     }
   }
 
@@ -4737,8 +4808,21 @@ bool CWriter::lowerIntrinsics(Function &F) {
           case Intrinsic::dbg_declare:
           case Intrinsic::umax:
           case Intrinsic::umin:
-          case Intrinsic::maximum:
-          case Intrinsic::minimum:
+          case Intrinsic::smax:
+          case Intrinsic::smin:
+          case Intrinsic::maxnum:
+          case Intrinsic::minnum:
+          case Intrinsic::sadd_sat:
+          case Intrinsic::uadd_sat:
+          case Intrinsic::ssub_sat:
+          case Intrinsic::usub_sat:
+          case Intrinsic::fshr:
+          case Intrinsic::fshl:
+          case Intrinsic::fptosi_sat:
+          case Intrinsic::fptoui_sat:
+          case Intrinsic::abs:
+          case Intrinsic::bitreverse:
+
             // We directly implement these intrinsics
             break;
 
@@ -5045,8 +5129,20 @@ bool CWriter::visitBuiltinCall(CallInst &I, Intrinsic::ID ID) {
   case Intrinsic::trunc:
   case Intrinsic::umax:
   case Intrinsic::umin:
-  case Intrinsic::maximum:
-  case Intrinsic::minimum:
+  case Intrinsic::smax:
+  case Intrinsic::smin:
+  case Intrinsic::maxnum:
+  case Intrinsic::minnum:
+  case Intrinsic::sadd_sat:
+  case Intrinsic::uadd_sat:
+  case Intrinsic::ssub_sat:
+  case Intrinsic::usub_sat:
+  case Intrinsic::fshr:
+  case Intrinsic::fshl:
+  case Intrinsic::fptosi_sat:
+  case Intrinsic::fptoui_sat:
+  case Intrinsic::abs:
+  case Intrinsic::bitreverse:
     return false; // these use the normal function call emission
   }
 }
@@ -5260,7 +5356,7 @@ void CWriter::visitAllocaInst(AllocaInst &I) {
   Out << "))";
 }
 
-void CWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
+void CWriter::printGEPExpression(Value *Ptr, unsigned NumOperators, gep_type_iterator I,
                                  gep_type_iterator E) {
 
   // If there are no indices, just print out the pointer.
@@ -5269,38 +5365,45 @@ void CWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
     return;
   }
 
-  Out << "(&";
+  Out << '(';
+  for (unsigned Operator = 2; Operator < NumOperators; ++Operator) {
+    Out << "(&";
+  }
 
   // The first index of a GEP is special. It does pointer arithmetic without
   // indexing into the element type.
   Value *FirstOp = I.getOperand();
+  cwriter_assert(!FirstOp->getType()->isVectorTy());
   Type *IntoT = I.getIndexedType();
   ++I;
   if (!isConstantNull(FirstOp)) {
-    Out << "((";
+    Out << "(&((";
     printTypeName(Out, IntoT);
     Out << "*)";
     writeOperand(Ptr);
     Out << ")[";
     writeOperandWithCast(FirstOp, Instruction::GetElementPtr);
-    Out << ']';
+    Out << "])";
   } else {
     // When the first index is 0 (very common) we can simplify it.
     if (tryGetTypeOfAddressExposedValue(Ptr)) {
       // Print P rather than (&P)[0]
+      Out << "(&";
       writeOperandInternal(Ptr);
+      Out << ')';
     } else if (I != E && I.isStruct()) {
       // If the second index is a struct index, print P->f instead of P[0].f
-      Out << "((";
+      Out << "(&((";
       printTypeName(Out, I.getStructType());
       Out << "*)";
       writeOperand(Ptr);
-      Out << ")->field" << cast<ConstantInt>(I.getOperand())->getZExtValue();
+      Out << ")->field" << cast<ConstantInt>(I.getOperand())->getZExtValue() << ')';
       // Eat the struct index
       ++I;
+      Out << ')';
     } else {
       // Print (*P)[1] instead of P[0][1] (more idiomatic)
-      Out << "(*((";
+      Out << "((";
       if (isEmptyType(IntoT)) {
         if (VectorType *VT = dyn_cast<VectorType>(IntoT)) {
           printTypeName(Out, VT->getElementType());
@@ -5314,7 +5417,7 @@ void CWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
       }
       Out << "*)";
       writeOperand(Ptr);
-      Out << "))";
+      Out << ")";
     }
   }
 
@@ -5327,43 +5430,21 @@ void CWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
                               // but we don't support it here
 
     if (I.isStruct()) {
-      Out << ".field" << cast<ConstantInt>(Opnd)->getZExtValue();
-    } else if (IntoT->isArrayTy()) {
-      // Zero-element array types are either skipped or, for pointers, peeled
-      // off by skipEmptyArrayTypes. In this latter case, we can translate
-      // zero-element array indexing as pointer arithmetic.
-      if (IntoT->getArrayNumElements() == 0) {
-        if (!isConstantNull(Opnd)) {
-          // TODO: The operator precedence here is only correct if there are no
-          //       subsequent indexable types other than zero-element arrays.
-          cwriter_assert(skipEmptyArrayTypes(IntoT)->isSingleValueType());
-          Out << " + (";
-          writeOperandWithCast(Opnd, Instruction::GetElementPtr);
-          Out << ')';
-        }
-      } else {
-        Out << ".array[";
-        writeOperandWithCast(Opnd, Instruction::GetElementPtr);
-        Out << ']';
-      }
-    } else if (!IntoT->isVectorTy()) {
-      Out << '[';
+      Out << "->field" << cast<ConstantInt>(Opnd)->getZExtValue();
+    } else if (IntoT->isArrayTy() && IntoT->getArrayNumElements() > 0) {
+      Out << "->array[";
       writeOperandWithCast(Opnd, Instruction::GetElementPtr);
       Out << ']';
     } else {
-      // If the last index is into a vector, then print it out as "+j)".
-      if (!isConstantNull(Opnd)) {
-        Out << "))"; // avoid "+0".
-      } else {
-        Out << ")+(";
-        writeOperandWithCast(I.getOperand(), Instruction::GetElementPtr);
-        Out << "))";
-      }
+      Out << '[';
+      writeOperandWithCast(Opnd, Instruction::GetElementPtr);
+      Out << ']';
     }
 
     IntoT = I.getIndexedType();
+    Out << ')';
   }
-  Out << ")";
+  Out << ')';
 }
 
 void CWriter::writeMemoryAccess(Value *Operand, Type *OperandType,
@@ -5465,7 +5546,30 @@ void CWriter::visitFenceInst(FenceInst &I) {
 void CWriter::visitGetElementPtrInst(GetElementPtrInst &I) {
   CurInstr = &I;
 
-  printGEPExpression(I.getPointerOperand(), gep_type_begin(I), gep_type_end(I));
+  auto FirstOp = gep_type_begin(I);
+  if ((FirstOp != gep_type_end(I)) && isa<VectorType>(FirstOp.getOperand()->getType())) {
+    CtorDeclTypes.insert(I.getType());
+    Out << "llvm_ctor_";
+    printTypeString(Out, I.getType(), false);
+    Out << "(";
+    for (unsigned Index = 0; Index < NumberOfElements(cast<VectorType>(I.getType())); ++Index) {
+      if (Index > 0)
+        Out << ", ";
+      Out << "(&((";
+      printTypeName(Out, FirstOp.getIndexedType());
+      Out << "*)";
+      writeOperand(I.getPointerOperand());
+      Out << ")[";
+      writeVectorOperandWithCast(FirstOp.getOperand(), Index, Instruction::GetElementPtr);
+      Out << "])";
+    }
+    Out << ")";
+
+    // If using a vector, then only one op is allowed.
+    cwriter_assert(++FirstOp == gep_type_end(I));
+  } else {
+    printGEPExpression(I.getPointerOperand(), I.getNumOperands(), gep_type_begin(I), gep_type_end(I));
+  }
 }
 
 void CWriter::visitVAArgInst(VAArgInst &I) {
@@ -5614,6 +5718,13 @@ void CWriter::visitExtractValueInst(ExtractValueInst &EVI) {
     }
   }
   Out << ")";
+}
+
+void CWriter::visitFreezeInst(FreezeInst &I) {
+  // TODO
+  Out << GetValueName(&I) << " = ";
+  writeOperand(I.getOperand(0));
+  Out << ';';
 }
 
 [[noreturn]] void CWriter::errorWithMessage(const char *message) {
