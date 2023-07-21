@@ -1763,7 +1763,7 @@ void CWriter::writeOperand(Value *Operand, enum OperandContext Context) {
     // We can't directly declare a zero-sized variable in C, so
     // printTypeNameForAddressableValue uses a single-byte type instead.
     // We fix up the pointer type here.
-    if (!isEmptyType(*InnerType))
+    if (!isEmptyType(InnerType.value()) && !InnerType.value()->isFunctionTy())
       Out << "(&";
     else
       Out << "((void*)&";
@@ -1851,6 +1851,7 @@ void CWriter::opcodeNeedsCast(
     shouldCast = true;
     castIsSigned = false;
     break;
+  case UnaryOps::BinaryNeg:
   case Instruction::GetElementPtr:
   case Instruction::AShr:
   case Instruction::SDiv:
@@ -2227,7 +2228,7 @@ static void defineInt128(raw_ostream &Out) {
 
 static void defineThreadFence(raw_ostream &Out) {
   Out << "#ifdef _MSC_VER\n"
-      << "#define __atomic_thread_fence(x) __faststorefence\n"
+      << "#define __atomic_thread_fence(x) __faststorefence()\n"
       << "#endif\n\n";
 }
 
@@ -4917,10 +4918,12 @@ void CWriter::visitCallInst(CallInst &I) {
   if (NeedsCast) {
     // Ok, just cast the pointer type.
     Out << "((" << getFunctionName(&I) << "*)(void*)";
-  }
-  writeOperand(Callee, ContextCasted);
-  if (NeedsCast)
+    writeOperand(Callee, ContextCasted);
     Out << ')';
+  } else {
+    cwriter_assert(isa<Function>(Callee));
+    Out << GetValueName(Callee);
+  }
 
   Out << '(';
 
@@ -5361,7 +5364,7 @@ void CWriter::visitAllocaInst(AllocaInst &I) {
   Out << "))";
 }
 
-void CWriter::printGEPExpression(Value *Ptr, unsigned NumOperators,
+void CWriter::printGEPExpression(Value *Ptr, unsigned NumOperands,
                                  gep_type_iterator I, gep_type_iterator E) {
 
   // If there are no indices, just print out the pointer.
@@ -5371,7 +5374,9 @@ void CWriter::printGEPExpression(Value *Ptr, unsigned NumOperators,
   }
 
   Out << '(';
-  for (unsigned Operator = 2; Operator < NumOperators; ++Operator) {
+  // Start with operand #2: First operand is the Ptr, and first indexing operand
+  // is special (thus it will print its own `&` if it needs it).
+  for (unsigned OperandIndex = 2; OperandIndex < NumOperands; ++OperandIndex) {
     Out << "(&";
   }
 
@@ -5398,7 +5403,7 @@ void CWriter::printGEPExpression(Value *Ptr, unsigned NumOperators,
       Out << ')';
     } else if (I != E && I.isStruct()) {
       // If the second index is a struct index, print P->f instead of P[0].f
-      Out << "(&((";
+      Out << "(((";
       printTypeName(Out, I.getStructType());
       Out << "*)";
       writeOperand(Ptr);
@@ -5552,6 +5557,8 @@ void CWriter::visitFenceInst(FenceInst &I) {
 void CWriter::visitGetElementPtrInst(GetElementPtrInst &I) {
   CurInstr = &I;
 
+  // GetElementPtrInst has a special form that takes a vector as the only index
+  // operand and then returns a vector of pointers into the pointer operand.
   auto FirstOp = gep_type_begin(I);
   if ((FirstOp != gep_type_end(I)) &&
       isa<VectorType>(FirstOp.getOperand()->getType())) {
@@ -5563,7 +5570,7 @@ void CWriter::visitGetElementPtrInst(GetElementPtrInst &I) {
          Index < NumberOfElements(cast<VectorType>(I.getType())); ++Index) {
       if (Index > 0)
         Out << ", ";
-      Out << "(&((";
+      Out << "&(((";
       printTypeName(Out, FirstOp.getIndexedType());
       Out << "*)";
       writeOperand(I.getPointerOperand());
