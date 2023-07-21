@@ -2480,6 +2480,13 @@ void CWriter::generateHeader(Module &M) {
       continue;
     printTypeName(NullOut, I->getValueType(), false);
   }
+  for (Module::alias_iterator I = M.alias_begin(), E = M.alias_end(); I != E;
+       ++I) {
+    if (!I->hasLocalLinkage() && I->getValueType()->isFunctionTy()) {
+      // Make sure that the aliasee function type name exists.
+      getFunctionName(cast<Function>(I->getAliaseeObject()));
+    }
+  }
   printModuleTypes(Out);
 
   // Global variable declarations...
@@ -2675,8 +2682,12 @@ void CWriter::generateHeader(Module &M) {
         headerUseAligns();
         Out << "__PREFIXALIGN__(" << Alignment << ") ";
       }
+      std::optional<std::string> CastAs{};
       if (ElTy->isFunctionTy()) {
-        getFunctionName(cast<Function>(I->getAliaseeObject()));
+        std::string FunctionName =
+            getFunctionName(cast<Function>(I->getAliaseeObject()));
+        Out << FunctionName;
+        CastAs = FunctionName;
       } else {
         printTypeName(Out, ElTy, false);
       }
@@ -2693,6 +2704,9 @@ void CWriter::generateHeader(Module &M) {
         Out << " __EXTERNAL_WEAK__";
       }
       Out << " = ";
+      if (CastAs.has_value()) {
+        Out << '(' << CastAs.value() << "*)";
+      }
       writeOperand(I->getAliasee(), ContextStatic);
       Out << ";\n";
     }
